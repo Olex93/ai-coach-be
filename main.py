@@ -1,6 +1,8 @@
 import json
+from datetime import timedelta, datetime
 
 from fastapi import Depends, FastAPI, HTTPException, status, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -10,11 +12,25 @@ from authentication import validate_request_and_user, create_access_token, encry
 from database import get_user_from_database, create_database_and_tables, save_verification_code, \
     get_verification_code, create_user_in_database, verify_user_in_database, update_user_details, save_workout_log, \
     get_formatted_workout_data
+from middleware.fast_api_middleware import SessionTimeoutMiddleware
 from openai import get_json_from_notes, get_chatgpt_response
 from models import UserWorkoutNotesInput, UserCreate, EmailVerificationInput, UserDetailsUpdate
 from utils.email_utils import send_verification_email
+from utils.langchain_utils import add_message_to_memory, generate_response, is_session_expired, reset_session, \
+    memory as langchain_buffer_memory, \
+    summarize_conversation, set_initial_context, initial_context, initialize_context
 
 app = FastAPI()
+
+app.add_middleware(SessionTimeoutMiddleware, timeout=30)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 bearer_scheme = HTTPBearer()
@@ -120,45 +136,36 @@ async def save_workout(user_workout_input: UserWorkoutNotesInput, user: dict = D
 
 @app.post("/chat", status_code=status.HTTP_200_OK)
 async def chat_with_gpt(request: Request, user: dict = Depends(validate_request_and_user)):
+    if is_session_expired():
+        reset_session()
+        return {"message": "Session expired. Please start a new session."}
+
+    if not initial_context:
+        user_data = get_user_from_database(user["email"])
+        user_id = user_data["user_id"]
+        workout_history = get_formatted_workout_data(user_id)
+        initialize_context(user_data, workout_history)
+
+    # Summarize conversation if needed
+    if len(langchain_buffer_memory) > 9000:
+        summarize_conversation()
+
     data = await request.json()
     user_message = data["message"]
-    conversation_history = data.get("conversation_history", [])
 
-    user = get_user_from_database(user["email"])
-    user_id = user["user_id"]
-    # Get user's personal data
-    user_personal_data = (
-        f"User's personal data:\n"
-        f"Age: {user['age']}\n"
-        f"Weight: {user['weight']} kg\n"
-        f"Height: {user['height']} cm\n"
-        f"Gender: {user['gender']}\n"
-        f"Goals: {user['goals']}\n"
-    )
+    add_message_to_memory("user", user_message)
 
-    # Get formatted workout data
-    workout_history = get_formatted_workout_data(user_id)
+    prompt = f"User: {user_message}\n"
 
-    # Construct the conversation prompt with workout data and conversation history
-    messages = [
-        {"role": "system", "content": "You are a fitness coach and expert data analyst."},
-        {"role": "assistant", "content": user_personal_data},
-        {"role": "assistant", "content": workout_history},
-    ]
+    chat_response = generate_response(prompt)
+    add_message_to_memory("assistant", chat_response)
 
-    for message in conversation_history:
-        messages.append({"role": message["role"], "content": message["content"]})
+    new_session_expiry_time = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
 
-    messages.append({"role": "user", "content": user_message})
-
-    # Send the prompt to ChatGPT
-    chat_response = get_chatgpt_response(messages)
-
-    # Append the new messages to the conversation history
-    conversation_history.append({"role": "user", "content": user_message})
-    conversation_history.append({"role": "assistant", "content": chat_response})
-
-    return {"message": chat_response, "conversation_history": conversation_history}
+    return {
+        "message": chat_response,
+        "session_expiry_time": new_session_expiry_time
+    }
 
 
 if __name__ == '__main__':
