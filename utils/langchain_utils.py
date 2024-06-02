@@ -11,38 +11,31 @@ session_start_time = datetime.utcnow()
 # Initialize ChatGPT model
 chat_model = ChatOpenAI(model_name="gpt-4", openai_api_key="YOUR_OPENAI_API_KEY")
 
-initial_context = ""
-
 
 def is_session_expired():
+    global session_start_time
     # Check if the session has lasted more than 1 day
     return datetime.utcnow() - session_start_time > timedelta(days=1)
 
 
 def reset_session():
-    global session_start_time, memory, initial_context
+    global session_start_time, memory
     session_start_time = datetime.utcnow()
     memory = ConversationBufferMemory(max_memory_size=10000)  # Reinitialize memory
-    initial_context = ""  # Reset initial context
-
-
-def set_initial_context(context):
-    global initial_context
-    initial_context = context
-    memory.add(role="system", content=context)
 
 
 def add_message_to_memory(role, content):
     memory.add(role=role, content=content)
 
 
-def generate_response(prompt, include_initial_context=False):
+async def generate_response(prompt, include_initial_context=False, initial_context=""):
     if include_initial_context:
         full_prompt = f"{initial_context}\n\n{prompt}"
     else:
         full_prompt = prompt
-    response = chat_model(full_prompt, memory=memory)
-    return response["text"]
+
+    response = await chat_model.agenerate([full_prompt])
+    return response["choices"][0]["message"]["content"]
 
 
 def summarize_conversation():
@@ -51,7 +44,7 @@ def summarize_conversation():
     return summary
 
 
-def initialize_context(user_data, workout_history, workout_summaries):
+def get_initial_context(user_data, workout_history):
     user_personal_data = (
         f"User's personal data:\n"
         f"Age: {user_data['age']}\n"
@@ -67,4 +60,4 @@ def initialize_context(user_data, workout_history, workout_summaries):
         f"{workout_history}\n\n"
     )
 
-    set_initial_context(initial_context_prompt)
+    return initial_context_prompt
