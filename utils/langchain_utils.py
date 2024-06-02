@@ -44,7 +44,7 @@ def summarize_conversation():
     return summary
 
 
-def initialize_context(user_data, workout_history):
+def get_initial_context(user_data, workout_history):
     user_personal_data = (
         f"User's personal data:\n"
         f"Age: {user_data['age']}\n"

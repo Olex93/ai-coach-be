@@ -18,7 +18,7 @@ from models import UserWorkoutNotesInput, UserCreate, EmailVerificationInput, Us
 from utils.email_utils import send_verification_email
 from utils.langchain_utils import add_message_to_memory, generate_response, is_session_expired, reset_session, \
     memory as langchain_buffer_memory, \
-    summarize_conversation, initialize_context
+    summarize_conversation, get_initial_context
 
 app = FastAPI()
 
@@ -136,7 +136,7 @@ async def save_workout(user_workout_input: UserWorkoutNotesInput, user: dict = D
         workout_history = get_formatted_workout_data(user_id)
 
         # Generate motivational analysis
-        prompt_context = initialize_context(user_data, workout_history)
+        prompt_context = get_initial_context(user_data, workout_history)
 
         analysis_output = generate_motivational_analysis(prompt_context, workout_data)
 
@@ -164,14 +164,14 @@ async def chat_with_gpt(request: Request, user: dict = Depends(validate_request_
         session_data.pop(session_id, None)  # Clear session data
         return {"message": "Session expired. Please start a new session."}
 
-    # Only add initial prompt context into the chatGPT request at the start of the session, now with every request
+    # Only add initial prompt context into the chatGPT request at the start of the session, not with every request
     include_initial_context = not session_data[session_id]["initial_context_set"]
 
     if include_initial_context:
         user_data = get_user_from_database(user["email"])
         user_id = user_data["user_id"]
         workout_history = get_formatted_workout_data(user_id)
-        initial_context = initialize_context(user_data, workout_history)
+        initial_context = get_initial_context(user_data, workout_history)
         session_data[session_id]["initial_context_set"] = True
     else:
         initial_context = ""  # Empty since it's already been included
@@ -180,7 +180,7 @@ async def chat_with_gpt(request: Request, user: dict = Depends(validate_request_
     if len(langchain_buffer_memory) > 9000:
         summarize_conversation()
 
-    data = await request.json()  # Await the async function
+    data = await request.json()
     user_message = data["message"]
 
     add_message_to_memory("user", user_message)
