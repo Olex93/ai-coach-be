@@ -13,7 +13,7 @@ from database import get_user_from_database, create_database_and_tables, save_ve
     get_verification_code, create_user_in_database, verify_user_in_database, update_user_details, save_workout_log, \
     get_formatted_workout_data
 from middleware.fast_api_middleware import SessionTimeoutMiddleware
-from openai import get_json_from_notes, get_chatgpt_response, generate_motivational_analysis
+from openai_utils import get_json_from_notes, get_chatgpt_response, generate_motivational_analysis
 from models import UserWorkoutNotesInput, UserCreate, EmailVerificationInput, UserDetailsUpdate
 from utils.email_utils import send_verification_email
 from utils.langchain_utils import add_message_to_memory, generate_response, is_session_expired, reset_session, \
@@ -46,7 +46,7 @@ session_data = {}
 
 @app.post("/register", status_code=status.HTTP_201_CREATED)
 @limiter.limit("5 per minute")
-async def register_user(user: UserCreate):
+async def register_user(request: Request, user: UserCreate):
     existing_user = get_user_from_database(user.email)
     if existing_user:
         raise HTTPException(
@@ -64,12 +64,21 @@ async def register_user(user: UserCreate):
 
 @app.post("/verify", status_code=status.HTTP_200_OK)
 @limiter.limit("5 per minute")
-async def verify_user(input: EmailVerificationInput):
-    stored_code = get_verification_code(input.email)
-    if stored_code != input.code:
+async def verify_user(request: Request, input: EmailVerificationInput):
+    result = get_verification_code(input.email)
+    if result is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid verification code",
+            detail="Invalid or expired verification code",
+        )
+
+    stored_code, expiration = result
+
+    # Check if the provided code matches the stored code and if the code is still valid
+    if stored_code != input.code or datetime.now() > expiration:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
         )
 
     verify_user_in_database(input.email)
@@ -81,7 +90,7 @@ async def verify_user(input: EmailVerificationInput):
 
 
 @app.post("/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     # Find a user in the db using provided email
     user = get_user_from_database(form_data.username)
 
@@ -110,13 +119,15 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 
 @app.post("/update-personal-details", status_code=status.HTTP_200_OK)
-async def update_personal_details(details: UserDetailsUpdate, user: dict = Depends(validate_request_and_user)):
+async def update_personal_details(request: Request, details: UserDetailsUpdate,
+                                  user: dict = Depends(validate_request_and_user)):
     update_user_details(user["email"], details.height, details.weight, details.age, details.gender, details.goals)
     return {"msg": "Personal details updated successfully"}
 
 
 @app.post("/save-workout")
-async def save_workout(user_workout_input: UserWorkoutNotesInput, user: dict = Depends(validate_request_and_user)):
+async def save_workout(request: Request, user_workout_input: UserWorkoutNotesInput,
+                       user: dict = Depends(validate_request_and_user)):
     if not user_workout_input.notes:
         raise HTTPException(status_code=400, detail="No notes provided")
     try:
@@ -152,7 +163,7 @@ async def save_workout(user_workout_input: UserWorkoutNotesInput, user: dict = D
 async def chat_with_gpt(request: Request, user: dict = Depends(validate_request_and_user)):
     session_id = user["email"]
 
-    # Initialise the session if there isn't one already'
+    # Initialise the session if there isn't one already
     if session_id not in session_data:
         session_data[session_id] = {
             "initial_context_set": False
@@ -177,7 +188,7 @@ async def chat_with_gpt(request: Request, user: dict = Depends(validate_request_
         initial_context = ""  # Empty since it's already been included
 
     # Summarize conversation if needed
-    if len(langchain_buffer_memory) > 9000:
+    if len(langchain_buffer_memory.buffer) > 9000:
         summarize_conversation()
 
     data = await request.json()
@@ -188,10 +199,11 @@ async def chat_with_gpt(request: Request, user: dict = Depends(validate_request_
     prompt = f"User: {user_message}\n"
 
     chat_response = await generate_response(prompt, include_initial_context=include_initial_context,
-                                      initial_context=initial_context)
+                                            initial_context=initial_context)
     add_message_to_memory("assistant", chat_response)
 
-    new_session_expiry_time = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
+    # Set a reasonable session expiry time (e.g., 1 day from now)
+    new_session_expiry_time = (datetime.utcnow() + timedelta(days=1)).isoformat()
 
     return {
         "message": chat_response,

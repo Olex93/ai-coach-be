@@ -1,6 +1,6 @@
 import sqlite3
 from config import settings
-import datetime
+from datetime import datetime, timedelta
 
 
 def get_database_connection():
@@ -72,12 +72,14 @@ def get_user_from_database(email: str):
 def create_user_in_database(email: str, hashed_password: str):
     connection = get_database_connection()
     cursor = connection.cursor()
-    cursor.execute("""
-    INSERT INTO users (email, hashed_password)
-    VALUES (?, ?)
-    """, (email, hashed_password))
-    connection.commit()
-    connection.close()
+    try:
+        cursor.execute("""
+        INSERT INTO users (email, hashed_password, verified)
+        VALUES (?, ?, 0)
+        """, (email, hashed_password))
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def update_user_details(email: str, height: int, weight: int, age: int, gender: str, goals: str):
@@ -92,14 +94,14 @@ def update_user_details(email: str, height: int, weight: int, age: int, gender: 
     connection.close()
 
 
-def save_verification_code(email: str, code: str):
+def save_verification_code(email, code):
     connection = get_database_connection()
     cursor = connection.cursor()
-    expiration = datetime.datetime.now() + datetime.timedelta(minutes=10)
+    expiration = datetime.now() + timedelta(minutes=30)  # Set expiration time
     cursor.execute("""
-        INSERT INTO verification_codes (email, code, expiration)
-        VALUES (?, ?, ?)
-        """, (email, code, expiration))
+    INSERT INTO verification_codes (email, code, created_at, expiration)
+    VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+    """, (email, code, expiration.strftime("%Y-%m-%d %H:%M:%S")))
     connection.commit()
     connection.close()
 
@@ -108,15 +110,16 @@ def get_verification_code(email: str):
     connection = get_database_connection()
     cursor = connection.cursor()
     cursor.execute("""
-        SELECT code, expiration FROM verification_codes WHERE email = ? ORDER BY created_at DESC LIMIT 1
-        """, (email,))
+        SELECT code, created_at, expiration FROM verification_codes WHERE email = ? ORDER BY created_at DESC LIMIT 1
+    """, (email,))
     result = cursor.fetchone()
     connection.close()
     if result:
-        code, expiration = result
-        if datetime.datetime.now() > expiration:
+        code, created_at, expiration_str = result
+        expiration = datetime.strptime(expiration_str, "%Y-%m-%d %H:%M:%S")
+        if datetime.now() > expiration:
             return None
-        return code
+        return code, expiration
     return None
 
 

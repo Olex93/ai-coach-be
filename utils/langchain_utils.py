@@ -1,6 +1,8 @@
+from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
-from langchain.chat_models import ChatOpenAI
+from langchain.schema import HumanMessage, AIMessage
 from datetime import datetime, timedelta
+from config import settings
 
 # Initialize LangChain memory with a size suitable for a 1-day session
 memory = ConversationBufferMemory(max_memory_size=10000)
@@ -9,7 +11,7 @@ memory = ConversationBufferMemory(max_memory_size=10000)
 session_start_time = datetime.utcnow()
 
 # Initialize ChatGPT model
-chat_model = ChatOpenAI(model_name="gpt-4", openai_api_key="YOUR_OPENAI_API_KEY")
+chat_model = ChatOpenAI(model_name="gpt-4", openai_api_key=settings.OPENAI_API_KEY)
 
 
 def is_session_expired():
@@ -25,7 +27,10 @@ def reset_session():
 
 
 def add_message_to_memory(role, content):
-    memory.add(role=role, content=content)
+    if role == "user":
+        memory.save_context({"input": content}, {"output": ""})
+    elif role == "assistant":
+        memory.save_context({"input": ""}, {"output": content})
 
 
 async def generate_response(prompt, include_initial_context=False, initial_context=""):
@@ -34,8 +39,25 @@ async def generate_response(prompt, include_initial_context=False, initial_conte
     else:
         full_prompt = prompt
 
-    response = await chat_model.agenerate([full_prompt])
-    return response["choices"][0]["message"]["content"]
+    message_objects = [
+        HumanMessage(content=full_prompt)
+    ]
+
+    # Wrap message_objects in another list
+    message_objects_wrapped = [message_objects]
+
+    # Debug print to inspect the message objects
+    print("Converted message objects:", message_objects_wrapped)
+
+    response = await chat_model.agenerate(message_objects_wrapped)
+
+    # Debug print to inspect the response
+    print("Generated response:", response)
+
+    # Extract the generated response correctly
+    chat_response = response.generations[0][0].message.content
+
+    return chat_response
 
 
 def summarize_conversation():
